@@ -20,7 +20,7 @@
     main { flex: 1; display: flex; flex-direction: column; justify-content: center; max-width: 480px; width: 100%; margin: 0 auto; gap: 16px; }
     .card { background: var(--card); border-radius: 20px; padding: 24px; box-shadow: 0 10px 25px rgba(0,0,0,0.3); text-align: center; }
     .badge { display: inline-block; background: rgba(56, 189, 248, 0.15); color: var(--accent); padding: 4px 12px; border-radius: 999px; font-size: 0.8rem; font-weight: 700; margin-bottom: 12px; }
-    .question-text { font-size: 1.4rem; line-height: 1.4; font-weight: 600; min-height: 3.5em; display: flex; align-items: center; justify-content: center; }
+    .question-text { font-size: 1.35rem; line-height: 1.4; font-weight: 600; min-height: 3.5em; display: flex; align-items: center; justify-content: center; word-break: break-word; }
     .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
     .ans-btn { padding: 18px 12px; font-size: 1.05rem; color: #fff; }
     .btn-yes { background: var(--yes); }
@@ -71,7 +71,7 @@
       </div>
 
       <div id="guess-controls" class="grid-2 hidden">
-        <button class="ans-btn btn-yes" onclick="endGame(true)">You Got It!</button>
+        <button class="ans-btn btn-yes" onclick="endGame()">You Got It!</button>
         <button class="ans-btn btn-no" onclick="submitAnswer('No, keep guessing')">No, Continue</button>
       </div>
 
@@ -84,9 +84,9 @@
       <button class="btn-primary" onclick="resetGame()">Play Again</button>
     </div>
   </main>
-
   <script>
-    let apiKey = localStorage.getItem("gemini_api_key") || "";
+    let apiKey = (localStorage.getItem("gemini_api_key") || "").trim();
+    let activeModel = localStorage.getItem("gemini_active_model") || "";
     let history = [];
     let questionCount = 0;
     let currentPrompt = "";
@@ -126,10 +126,12 @@ Rules:
     }
 
     function saveKey() {
-      const val = document.getElementById("api-key-input").value.trim();
+      const val = document.getElementById("api-key-input").value.replace(/\s+/g, "");
       if (!val) return alert("Please enter a valid API key.");
       apiKey = val;
+      activeModel = "";
       localStorage.setItem("gemini_api_key", apiKey);
+      localStorage.removeItem("gemini_active_model");
       resetGame();
     }
 
@@ -156,13 +158,37 @@ Rules:
       fetchNextTurn();
     }
 
-    function endGame(won) {
+    function endGame() {
       showView("win-view");
       document.getElementById("win-text").textContent = `Nailed it in ${questionCount} questions!`;
     }
 
     function setButtonsDisabled(disabled) {
       document.querySelectorAll("#question-controls button, #guess-controls button").forEach(b => b.disabled = disabled);
+    }
+
+    async function resolveModel() {
+      if (activeModel) return activeModel;
+      const listRes = await fetch(`https://googleapis.com{encodeURIComponent(apiKey)}`);
+      const listData = await listRes.json();
+      if (!listRes.ok) throw new Error(listData.error?.message || "Invalid API Key");
+
+      const valid = (listData.models || []).filter(m =>
+        (m.supportedGenerationMethods || []).includes("generateContent") &&
+        m.name.includes("flash") &&
+        !m.name.includes("tts") &&
+        !m.name.includes("live") &&
+        !m.name.includes("image") &&
+        !m.name.includes("2.5")
+      );
+      const fallback = (listData.models || []).filter(m =>
+        (m.supportedGenerationMethods || []).includes("generateContent")
+      );
+      const chosen = valid.at(-1) || fallback.at(0);
+      if (!chosen) throw new Error("No text models available for this API key.");
+      activeModel = chosen.name;
+      localStorage.setItem("gemini_active_model", activeModel);
+      return activeModel;
     }
 
     async function fetchNextTurn() {
@@ -174,7 +200,8 @@ Rules:
         : history.map((h, i) => `Q${i + 1}: ${h.q}\nUser Answer: ${h.a}`).join("\n\n") + `\n\nProvide turn #${history.length + 1}.`;
 
       try {
-        const res = await fetch(`https://googleapis.com{encodeURIComponent(apiKey)}`, {
+        const modelPath = await resolveModel();
+        const res = await fetch(`https://googleapis.com{modelPath}:generateContent?key=${encodeURIComponent(apiKey)}`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
@@ -182,16 +209,20 @@ Rules:
             contents: [{ role: "user", parts: [{ text: transcript }] }],
             generationConfig: {
               responseMimeType: "application/json",
-              responseSchema: RESPONSE_SCHEMA,
-              temperature: 0.4
+              responseSchema: RESPONSE_SCHEMA
             }
           })
         });
 
         const data = await res.json();
-        if (!res.ok) throw new Error(data.error?.message || "API Error");
+        if (!res.ok) {
+          localStorage.removeItem("gemini_active_model");
+          activeModel = "";
+          throw new Error(data.error?.message || "API Error");
+        }
 
-        const result = JSON.parse(data.candidates.content.parts.text);
+        const rawText = data.candidates.at(0).content.parts.at(0).text;
+        const result = JSON.parse(rawText);
         questionCount++;
         currentPrompt = result.output_text;
 
