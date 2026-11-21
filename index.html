@@ -1,0 +1,214 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <meta name="theme-color" content="#0f172a" />
+  <title>20 Questions AI</title>
+  <style>
+    :root {
+      --bg: #0f172a; --card: #1e293b; --text: #f8fafc; --muted: #94a3b8;
+      --accent: #38bdf8; --yes: #22c55e; --no: #ef4444; --maybe: #eab308; --unsure: #64748b;
+    }
+    * { box-sizing: border-box; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+    body { margin: 0; background: var(--bg); color: var(--text); display: flex; flex-direction: column; min-height: 100dvh; padding: 16px; }
+    header { display: flex; justify-content: space-between; align-items: center; padding-bottom: 12px; border-bottom: 1px solid #334155; }
+    h1 { font-size: 1.2rem; margin: 0; }
+    button { border: none; border-radius: 12px; font-weight: 600; cursor: pointer; }
+    button:disabled { opacity: 0.5; }
+    .icon-btn { background: #334155; color: var(--text); padding: 8px 12px; font-size: 0.85rem; }
+    main { flex: 1; display: flex; flex-direction: column; justify-content: center; max-width: 480px; width: 100%; margin: 0 auto; gap: 16px; }
+    .card { background: var(--card); border-radius: 20px; padding: 24px; box-shadow: 0 10px 25px rgba(0,0,0,0.3); text-align: center; }
+    .badge { display: inline-block; background: rgba(56, 189, 248, 0.15); color: var(--accent); padding: 4px 12px; border-radius: 999px; font-size: 0.8rem; font-weight: 700; margin-bottom: 12px; }
+    .question-text { font-size: 1.4rem; line-height: 1.4; font-weight: 600; min-height: 3.5em; display: flex; align-items: center; justify-content: center; }
+    .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    .ans-btn { padding: 18px 12px; font-size: 1.05rem; color: #fff; }
+    .btn-yes { background: var(--yes); }
+    .btn-no { background: var(--no); }
+    .btn-maybe { background: var(--maybe); color: #0f172a; }
+    .btn-unsure { background: var(--unsure); }
+    .btn-primary { background: var(--accent); color: #0f172a; padding: 16px; font-size: 1.05rem; width: 100%; }
+    input { width: 100%; padding: 14px; border-radius: 12px; border: 1px solid #475569; background: #0f172a; color: var(--text); font-size: 1rem; margin: 12px 0; }
+    .history { max-height: 150px; overflow-y: auto; font-size: 0.85rem; color: var(--muted); background: rgba(15, 23, 42, 0.6); border-radius: 12px; padding: 10px 14px; }
+    .history div { padding: 4px 0; border-bottom: 1px solid #1e293b; }
+    .hidden { display: none !important; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>20 Questions</h1>
+    <div>
+      <button class="icon-btn" onclick="resetGame()">New Game</button>
+      <button class="icon-btn" onclick="toggleSettings()">API Key</button>
+    </div>
+  </header>
+
+  <main>
+    <div id="setup-view" class="card hidden">
+      <div class="badge">SETUP</div>
+      <p style="margin:0; color: var(--muted); font-size: 0.95rem;">Paste your Google Gemini API key below.</p>
+      <input type="password" id="api-key-input" placeholder="Paste API key here..." />
+      <button class="btn-primary" onclick="saveKey()">Save & Start Playing</button>
+    </div>
+
+    <div id="start-view" class="card">
+      <div class="badge">READY</div>
+      <div class="question-text">Think of anything—a person, song, object, or place—and I will find it.</div>
+      <button class="btn-primary" onclick="startGame()">I Have My Answer</button>
+    </div>
+
+    <div id="game-view" class="hidden" style="display:flex; flex-direction:column; gap:16px;">
+      <div class="card">
+        <div id="q-badge" class="badge">QUESTION 1</div>
+        <div id="q-text" class="question-text">Thinking...</div>
+      </div>
+
+      <div id="question-controls" class="grid-2">
+        <button class="ans-btn btn-yes" onclick="submitAnswer('Yes')">Yes</button>
+        <button class="ans-btn btn-no" onclick="submitAnswer('No')">No</button>
+        <button class="ans-btn btn-maybe" onclick="submitAnswer('Yes-ish / Maybe')">Yes-ish / Maybe</button>
+        <button class="ans-btn btn-unsure" onclick="submitAnswer('Unsure')">Unsure</button>
+      </div>
+
+      <div id="guess-controls" class="grid-2 hidden">
+        <button class="ans-btn btn-yes" onclick="endGame(true)">You Got It!</button>
+        <button class="ans-btn btn-no" onclick="submitAnswer('No, keep guessing')">No, Continue</button>
+      </div>
+
+      <div id="history-box" class="history hidden"></div>
+    </div>
+
+    <div id="win-view" class="card hidden">
+      <div class="badge">VICTORY</div>
+      <div id="win-text" class="question-text"></div>
+      <button class="btn-primary" onclick="resetGame()">Play Again</button>
+    </div>
+  </main>
+
+  <script>
+    let apiKey = localStorage.getItem("gemini_api_key") || "";
+    let history = [];
+    let questionCount = 0;
+    let currentPrompt = "";
+
+    const SYSTEM_PROMPT = `You are playing 20 Questions. The user is thinking of a secret subject.
+Rules:
+1. Ask ONE strictly binary Yes/No question per turn to narrow down the possibility space using information theory.
+2. NEVER ask multiple-choice or "either/or" questions (e.g. do NOT ask "Is it A or B?").
+3. Put all your analysis, elimination, and candidate ideas inside 'internal_reasoning'.
+4. 'output_text' must ONLY contain the single question or final guess—zero commentary, zero preamble, zero hints about what you deduced.
+5. Make a guess ('make_guess') when confident or around question 20. If the user says "No, keep guessing", continue asking narrow Yes/No questions.`;
+
+    const RESPONSE_SCHEMA = {
+      type: "OBJECT",
+      properties: {
+        internal_reasoning: { type: "STRING" },
+        action_type: { type: "STRING", enum: ["ask_question", "make_guess"] },
+        output_text: { type: "STRING" }
+      },
+      required: ["internal_reasoning", "action_type", "output_text"]
+    };
+
+    function init() {
+      if (!apiKey) showView("setup-view");
+      else showView("start-view");
+    }
+
+    function showView(id) {
+      ["setup-view", "start-view", "game-view", "win-view"].forEach(v => {
+        document.getElementById(v).classList.toggle("hidden", v !== id);
+      });
+    }
+
+    function toggleSettings() {
+      document.getElementById("api-key-input").value = apiKey;
+      showView("setup-view");
+    }
+
+    function saveKey() {
+      const val = document.getElementById("api-key-input").value.trim();
+      if (!val) return alert("Please enter a valid API key.");
+      apiKey = val;
+      localStorage.setItem("gemini_api_key", apiKey);
+      resetGame();
+    }
+
+    function resetGame() {
+      history = [];
+      questionCount = 0;
+      document.getElementById("history-box").innerHTML = "";
+      document.getElementById("history-box").classList.add("hidden");
+      showView(apiKey ? "start-view" : "setup-view");
+    }
+
+    function startGame() {
+      history = [];
+      questionCount = 0;
+      showView("game-view");
+      fetchNextTurn();
+    }
+
+    function submitAnswer(answer) {
+      history.push({ q: currentPrompt, a: answer });
+      const box = document.getElementById("history-box");
+      box.classList.remove("hidden");
+      box.innerHTML = history.map((item, i) => `<div><b>#${i + 1}:</b> ${item.q} — <i>${item.a}</i></div>`).reverse().join("");
+      fetchNextTurn();
+    }
+
+    function endGame(won) {
+      showView("win-view");
+      document.getElementById("win-text").textContent = `Nailed it in ${questionCount} questions!`;
+    }
+
+    function setButtonsDisabled(disabled) {
+      document.querySelectorAll("#question-controls button, #guess-controls button").forEach(b => b.disabled = disabled);
+    }
+
+    async function fetchNextTurn() {
+      setButtonsDisabled(true);
+      document.getElementById("q-text").textContent = "Thinking...";
+
+      const transcript = history.length === 0
+        ? "Start the game with Question 1."
+        : history.map((h, i) => `Q${i + 1}: ${h.q}\nUser Answer: ${h.a}`).join("\n\n") + `\n\nProvide turn #${history.length + 1}.`;
+
+      try {
+        const res = await fetch(`https://googleapis.com{encodeURIComponent(apiKey)}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            systemInstruction: { parts: [{ text: SYSTEM_PROMPT }] },
+            contents: [{ role: "user", parts: [{ text: transcript }] }],
+            generationConfig: {
+              responseMimeType: "application/json",
+              responseSchema: RESPONSE_SCHEMA,
+              temperature: 0.4
+            }
+          })
+        });
+
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error?.message || "API Error");
+
+        const result = JSON.parse(data.candidates.content.parts.text);
+        questionCount++;
+        currentPrompt = result.output_text;
+
+        const isGuess = result.action_type === "make_guess";
+        document.getElementById("q-badge").textContent = isGuess ? `GUESS (TURN ${questionCount})` : `QUESTION ${questionCount}`;
+        document.getElementById("q-text").textContent = currentPrompt;
+
+        document.getElementById("question-controls").classList.toggle("hidden", isGuess);
+        document.getElementById("guess-controls").classList.toggle("hidden", !isGuess);
+      } catch (err) {
+        document.getElementById("q-text").textContent = `Error: ${err.message}`;
+      } finally {
+        setButtonsDisabled(false);
+      }
+    }
+
+    init();
+  </script>
+</body>
+</html>
